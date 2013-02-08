@@ -441,11 +441,15 @@ func TestRepeatedCrash(t *testing.T) {
   }
 
   for i := 0; i < viewservice.DeadPings; i++ {
-    if vck.Primary() != "" {
+    v, _ := vck.Get()
+    if v.Primary != "" && v.Backup != "" {
       break
     }
     time.Sleep(viewservice.PingInterval)
   }
+
+  // wait a bit for primary to initialize backup
+  time.Sleep(viewservice.DeadPings * viewservice.PingInterval)
 
   done := false
 
