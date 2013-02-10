@@ -150,11 +150,29 @@ func Test1(t *testing.T) {
       }
       time.Sleep(PingInterval)
     }
-    check(t, ck3, ck3.me, "", vx.Viewnum + 1)
+    vy, _ := ck3.Get()
+    if vy.Primary != ck3.me {
+      t.Fatalf("expected primary=%v, got %v\n", ck3.me, vy.Primary)
+    }
   }
   fmt.Printf("  ... Passed\n")
+  
 
-  // does vieserver wait for ack of previous view before
+  // set up a view with just 3 as primary,
+  // to prepare for the next test.
+  {
+    for i := 0; i < DeadPings * 3; i++ {
+      vx, _ := ck3.Get()
+      ck3.Ping(vx.Viewnum)
+      time.Sleep(PingInterval)
+    }
+    v, _ := ck3.Get()
+    if v.Primary != ck3.me || v.Backup != "" {
+      t.Fatalf("wrong primary or backup")
+    }
+  }
+
+  // does viewserver wait for ack of previous view before
   // starting the next one?
   fmt.Printf("Test: Viewserver waits for primary to ack view ...\n")
   
