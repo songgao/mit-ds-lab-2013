@@ -10,26 +10,27 @@ package shardkv
 //
 
 const (
-  OK = "OK"
-  ErrNoKey = "ErrNoKey"
-  ErrWrongGroup = "ErrWrongGroup"
+	OK            = "OK"
+	ErrNoKey      = "ErrNoKey"
+	ErrWrongGroup = "ErrWrongGroup"
 )
+
 type Err string
 
 type PutArgs struct {
-  Key string
-  Value string
+	Key   string
+	Value string
 }
 
 type PutReply struct {
-  Err Err
+	Err Err
 }
 
 type GetArgs struct {
-  Key string
+	Key string
 }
 
 type GetReply struct {
-  Err Err
-  Value string
+	Err   Err
+	Value string
 }
