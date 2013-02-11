@@ -9,6 +9,21 @@ import "os"
 import "io"
 import "time"
 
+const (
+	REQBUFFERSIZE = 4
+)
+
+type clientReq struct {
+	ReqID  int
+	LReply LockReply
+	UReply UnlockReply
+}
+
+type clientReqBuffer struct {
+	Counter int
+	Buffer  [REQBUFFERSIZE]clientReq
+}
+
 type LockServer struct {
 	mu    sync.Mutex
 	l     net.Listener
@@ -17,9 +32,30 @@ type LockServer struct {
 
 	am_primary bool   // am I the primary?
 	backup     string // backup's port
+	backupDead bool
 
 	// for each lock name, is it locked?
 	locks map[string]bool
+
+	clientReqHistory map[int]*clientReqBuffer
+}
+
+func (ls *LockServer) nilGuard(clientID int) {
+	if ls.clientReqHistory[clientID] == nil {
+		ls.clientReqHistory[clientID] = new(clientReqBuffer)
+	}
+}
+
+func (ls *LockServer) updateLockHistory(args *LockArgs, reply *LockReply) {
+	ls.clientReqHistory[args.ClientID].Buffer[ls.clientReqHistory[args.ClientID].Counter].ReqID = args.ReqID
+	ls.clientReqHistory[args.ClientID].Buffer[ls.clientReqHistory[args.ClientID].Counter].LReply.OK = reply.OK
+	ls.clientReqHistory[args.ClientID].Counter = (ls.clientReqHistory[args.ClientID].Counter + 1) % REQBUFFERSIZE
+}
+
+func (ls *LockServer) updateUnlockHistory(args *UnlockArgs, reply *UnlockReply) {
+	ls.clientReqHistory[args.ClientID].Buffer[ls.clientReqHistory[args.ClientID].Counter].ReqID = args.ReqID
+	ls.clientReqHistory[args.ClientID].Buffer[ls.clientReqHistory[args.ClientID].Counter].UReply.OK = reply.OK
+	ls.clientReqHistory[args.ClientID].Counter = (ls.clientReqHistory[args.ClientID].Counter + 1) % REQBUFFERSIZE
 }
 
 //
@@ -31,6 +67,17 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 
+	ls.nilGuard(args.ClientID)
+	histBuffer := ls.clientReqHistory[args.ClientID].Buffer
+	for req := range histBuffer {
+		if histBuffer[req].ReqID == args.ReqID {
+			reply.OK = histBuffer[req].LReply.OK
+			return nil
+		}
+	}
+
+	defer ls.updateLockHistory(args, reply)
+
 	locked, _ := ls.locks[args.Lockname]
 
 	if locked {
@@ -38,6 +85,12 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 	} else {
 		reply.OK = true
 		ls.locks[args.Lockname] = true
+	}
+
+	if ls.am_primary && !ls.backupDead {
+		// notify backup
+		var backupReply LockReply
+		ls.backupDead = !call(ls.backup, "LockServer.Lock", args, &backupReply)
 	}
 
 	return nil
@@ -51,12 +104,29 @@ func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 
+	ls.nilGuard(args.ClientID)
+	histBuffer := ls.clientReqHistory[args.ClientID].Buffer
+	for req := range histBuffer {
+		if histBuffer[req].ReqID == args.ReqID {
+			reply.OK = histBuffer[req].UReply.OK
+			return nil
+		}
+	}
+
+	defer ls.updateUnlockHistory(args, reply)
+
 	locked, _ := ls.locks[args.Lockname]
 	if locked {
 		reply.OK = true
 		ls.locks[args.Lockname] = false
 	} else {
 		reply.OK = false
+	}
+
+	if ls.am_primary && !ls.backupDead {
+		//notify backup
+		var backupReply LockReply
+		ls.backupDead = !call(ls.backup, "LockServer.Unlock", args, &backupReply)
 	}
 
 	return nil
@@ -100,6 +170,7 @@ func StartServer(primary string, backup string, am_primary bool) *LockServer {
 	ls.locks = map[string]bool{}
 
 	// Your initialization code here.
+	ls.clientReqHistory = map[int]*clientReqBuffer{}
 
 	me := ""
 	if am_primary {

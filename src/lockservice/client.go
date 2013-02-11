@@ -1,6 +1,11 @@
 package lockservice
 
 import "net/rpc"
+import "math/rand"
+
+const (
+	MAXINT = int(^uint(0) >> 1)
+)
 
 //
 // the lockservice Clerk lives in the client
@@ -9,6 +14,8 @@ import "net/rpc"
 type Clerk struct {
 	servers [2]string // primary port, backup port
 	// Your definitions here.
+	reqID    int
+	clientID int
 }
 
 func MakeClerk(primary string, backup string) *Clerk {
@@ -16,7 +23,16 @@ func MakeClerk(primary string, backup string) *Clerk {
 	ck.servers[0] = primary
 	ck.servers[1] = backup
 	// Your initialization code here.
+	ck.clientID = rand.Int()
+	ck.reqID = 1
 	return ck
+}
+
+func (ck *Clerk) newReqID() {
+	ck.reqID++
+	if ck.reqID == MAXINT {
+		ck.reqID = 1
+	}
 }
 
 //
@@ -58,15 +74,22 @@ func call(srv string, rpcname string,
 // you will have to modify this function.
 //
 func (ck *Clerk) Lock(lockname string) bool {
+	ck.newReqID()
+
 	// prepare the arguments.
 	args := &LockArgs{}
 	args.Lockname = lockname
+	args.ReqID = ck.reqID
+	args.ClientID = ck.clientID
 	var reply LockReply
 
 	// send an RPC request, wait for the reply.
 	ok := call(ck.servers[0], "LockServer.Lock", args, &reply)
+
 	if ok == false {
-		return false
+		// try backup
+		ok = call(ck.servers[1], "LockServer.Lock", args, &reply)
+		return ok && reply.OK
 	}
 
 	return reply.OK
@@ -79,14 +102,20 @@ func (ck *Clerk) Lock(lockname string) bool {
 //
 
 func (ck *Clerk) Unlock(lockname string) bool {
+	ck.newReqID()
+
 	args := new(UnlockArgs)
 	args.Lockname = lockname
+	args.ReqID = ck.reqID
+	args.ClientID = ck.clientID
 	var reply UnlockReply
 
 	// send an RPC request, wait for the reply.
 	ok := call(ck.servers[0], "LockServer.Unlock", args, &reply)
 	if !ok {
-		return false
+		// try backup
+		ok = call(ck.servers[1], "LockServer.Unlock", args, &reply)
+		return ok && reply.OK
 	}
 
 	return reply.OK
