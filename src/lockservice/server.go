@@ -48,7 +48,16 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 //
 func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
 
-	// Your code here.
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+
+	locked, _ := ls.locks[args.Lockname]
+	if locked {
+		reply.OK = true
+		ls.locks[args.Lockname] = false
+	} else {
+		reply.OK = false
+	}
 
 	return nil
 }
