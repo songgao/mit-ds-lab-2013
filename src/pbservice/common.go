@@ -1,10 +1,15 @@
 package pbservice
 
+import "errors"
+
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongServer = "ErrWrongServer"
+	OK              = "OK"
+	ErrNoKey        = "ErrNoKey"
+	ErrWrongServer  = "ErrWrongServer"
+	ErrWrongViewnum = "ErrWrongViewnum"
 )
+
+var RPCERR = errors.New("RPC Error")
 
 type Err string
 
@@ -27,3 +32,11 @@ type GetReply struct {
 }
 
 // Your RPC definitions here.
+type SyncArgs struct {
+	Data    map[string]string
+	Viewnum uint
+}
+
+type SyncReply struct {
+	Err Err
+}

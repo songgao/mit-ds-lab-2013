@@ -2,17 +2,26 @@ package pbservice
 
 import "viewservice"
 import "net/rpc"
+import "time"
+import "sync"
 
 // You'll probably need to uncomment this:
 // import "time"
 
 type Clerk struct {
-	vs *viewservice.Clerk
+	vs   *viewservice.Clerk
+	view viewservice.View
+	mu   sync.Mutex
 }
 
 func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
+	ok := false
+	for !ok {
+		ck.view, ok = ck.vs.Get()
+		time.Sleep(viewservice.PingInterval)
+	}
 	return ck
 }
 
@@ -58,7 +67,24 @@ func (ck *Clerk) Get(key string) string {
 
 	// Your code here.
 
-	return "???"
+	if key == "" {
+		return ErrNoKey
+	}
+
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	reply := new(GetReply)
+	ok := call(ck.view.Primary, "PBServer.Get", &GetArgs{Key: key}, reply)
+	for !(ok && reply.Err == OK) {
+		ck.view, ok = ck.vs.Get()
+		if ok {
+			ok = call(ck.view.Primary, "PBServer.Get", &GetArgs{Key: key}, reply)
+		}
+		time.Sleep(viewservice.PingInterval)
+	}
+
+	return reply.Value
 }
 
 //
@@ -68,4 +94,21 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) Put(key string, value string) {
 
 	// Your code here.
+
+	if key == "" {
+		return
+	}
+
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	reply := new(PutReply)
+	ok := call(ck.view.Primary, "PBServer.Put", &PutArgs{Key: key, Value: value}, reply)
+	for !(ok && reply.Err == OK) {
+		ck.view, ok = ck.vs.Get()
+		if ok {
+			ok = call(ck.view.Primary, "PBServer.Put", &PutArgs{Key: key, Value: value}, reply)
+		}
+		time.Sleep(viewservice.PingInterval)
+	}
 }
