@@ -174,7 +174,7 @@ func (px *Paxos) proposer(seq int) {
 			connected++
 			if preRsp.OK {
 				counter++
-				if preRsp.N_a > max_n && preRsp.V_a != nil {
+				if preRsp.N_a > max_n {
 					max_n = preRsp.N_a
 					v_ = preRsp.V_a
 				}
@@ -184,7 +184,8 @@ func (px *Paxos) proposer(seq int) {
 
 	if counter <= len(px.peers)/2 {
 		if connected <= len(px.peers)/2 {
-			time.Sleep(100 * time.Millisecond)
+			// Is in minority; should slow down requests to save bandwidth
+			time.Sleep(5 * time.Millisecond)
 		}
 		go px.proposer(seq)
 		return
