@@ -29,6 +29,23 @@ import "sync"
 import "fmt"
 import "math/rand"
 
+import "time"
+
+type instance struct {
+	MuProposor sync.Mutex
+	N          int
+	V          interface{}
+
+	MuAcceptor sync.Mutex
+	N_p        int         // highest prepare seen
+	N_a        int         // highest accept seen
+	V_a        interface{} // highest accept seen
+
+	MuLearner sync.Mutex
+	Decided   bool
+	Value     interface{}
+}
+
 type Paxos struct {
 	mu         sync.Mutex
 	l          net.Listener
@@ -38,6 +55,10 @@ type Paxos struct {
 	me         int // index into peers[]
 
 	// Your data here.
+	instances map[int]*instance
+	max_seq   int
+	done      int
+	dones     map[int]int // peer index --> Done number
 }
 
 //
@@ -79,6 +100,194 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
+	min_done := px.Min()
+
+	px.mu.Lock()
+	if seq < min_done { // ignore forgotten seq range
+		px.mu.Unlock()
+		return
+	}
+
+	ins, ok := px.instances[seq]
+	if !ok {
+		px.instances[seq] = new(instance)
+		ins = px.instances[seq]
+	}
+
+	if seq > px.max_seq {
+		px.max_seq = seq
+	}
+	px.mu.Unlock()
+
+	ins.MuLearner.Lock()
+	decided := ins.Decided
+	ins.MuLearner.Unlock()
+	if decided {
+		return
+	}
+
+	ins.MuProposor.Lock()
+	ins.V = v
+	ins.MuProposor.Unlock()
+
+	go px.proposer(seq)
+}
+
+func (px *Paxos) proposer(seq int) {
+	px.mu.Lock()
+	ins, ok := px.instances[seq]
+	done := px.done
+	me := px.me
+	px.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	ins.MuAcceptor.Lock()
+	max_seen := ins.N_p
+	ins.MuAcceptor.Unlock()
+
+	ins.MuProposor.Lock()
+	defer ins.MuProposor.Unlock()
+
+	if ins.N == 0 {
+		ins.N = px.me + 1
+	} else {
+		ins.N = (max_seen/len(px.peers)+1)*len(px.peers) + px.me + 1
+	}
+
+	// send prepare
+	var preReq PrepareReq
+	var preRsp PrepareRsp
+	preReq.Seq = seq
+	preReq.N = ins.N
+	preReq.Done = done
+	preReq.Me = me
+	counter := 0
+	connected := 0
+	v_ := ins.V
+	max_n := -1
+	for i := range px.peers {
+		ok := call(px.peers[i], "Paxos.AcceptorPrepare", &preReq, &preRsp)
+		if ok {
+			connected++
+			if preRsp.OK {
+				counter++
+				if preRsp.N_a > max_n && preRsp.V_a != nil {
+					max_n = preRsp.N_a
+					v_ = preRsp.V_a
+				}
+			}
+		}
+	}
+
+	if counter <= len(px.peers)/2 {
+		if connected <= len(px.peers)/2 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		go px.proposer(seq)
+		return
+	}
+
+	// send accept
+	var actReq AcceptReq
+	var actRsp AcceptRsp
+	actReq.Seq = seq
+	actReq.N = ins.N
+	actReq.V = v_
+	counter = 0
+	for i := range px.peers {
+		ok := call(px.peers[i], "Paxos.AcceptorAccept", &actReq, &actRsp)
+		if ok {
+			if actRsp.OK {
+				counter++
+			}
+		}
+	}
+
+	if counter <= len(px.peers)/2 {
+		go px.proposer(seq)
+		return
+	}
+
+	// send decided
+	var decReq DecidedReq
+	var decRsp DecidedRsp
+	decReq.Seq = seq
+	decReq.V = v_
+	for i := range px.peers {
+		call(px.peers[i], "Paxos.LearnerDecided", &decReq, &decRsp)
+	}
+	px.LearnerDecided(&decReq, &decRsp)
+}
+
+func (px *Paxos) AcceptorPrepare(req *PrepareReq, rsp *PrepareRsp) error {
+	px.mu.Lock()
+	ins, ok := px.instances[req.Seq]
+	if !ok {
+		px.instances[req.Seq] = new(instance)
+		ins = px.instances[req.Seq]
+	}
+
+	px.dones[req.Me] = req.Done
+	px.mu.Unlock()
+
+	ins.MuAcceptor.Lock()
+	defer ins.MuAcceptor.Unlock()
+
+	if req.N > ins.N_p {
+		ins.N_p = req.N
+		rsp.OK = true
+		rsp.N_a = ins.N_a
+		rsp.V_a = ins.V_a
+	} else {
+		rsp.OK = false
+	}
+
+	return nil
+}
+
+func (px *Paxos) AcceptorAccept(req *AcceptReq, rsp *AcceptRsp) error {
+	px.mu.Lock()
+	ins, ok := px.instances[req.Seq]
+	if !ok {
+		px.instances[req.Seq] = new(instance)
+		ins = px.instances[req.Seq]
+	}
+	px.mu.Unlock()
+
+	ins.MuAcceptor.Lock()
+	defer ins.MuAcceptor.Unlock()
+
+	if req.N >= ins.N_p {
+		ins.N_p = req.N
+		ins.N_a = req.N
+		ins.V_a = req.V
+		rsp.OK = true
+	} else {
+		rsp.OK = false
+	}
+
+	return nil
+}
+
+func (px *Paxos) LearnerDecided(req *DecidedReq, rsp *DecidedRsp) error {
+	px.mu.Lock()
+	ins, ok := px.instances[req.Seq]
+	if !ok {
+		px.instances[req.Seq] = new(instance)
+		ins = px.instances[req.Seq]
+	}
+	px.mu.Unlock()
+
+	ins.MuLearner.Lock()
+	defer ins.MuLearner.Unlock()
+
+	ins.Decided = true
+	ins.Value = req.V
+
+	return nil
 }
 
 //
@@ -89,6 +298,18 @@ func (px *Paxos) Start(seq int, v interface{}) {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	if px.done < seq {
+		px.done = seq
+		for k := range px.instances {
+			if k <= seq {
+				delete(px.instances, k)
+			}
+		}
+	}
+
 }
 
 //
@@ -98,7 +319,9 @@ func (px *Paxos) Done(seq int) {
 //
 func (px *Paxos) Max() int {
 	// Your code here.
-	return 0
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	return px.max_seq
 }
 
 //
@@ -134,7 +357,15 @@ func (px *Paxos) Max() int {
 // 
 func (px *Paxos) Min() int {
 	// You code here.
-	return 0
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	min_done := int(^uint(0) >> 1) // max value of int
+	for k := range px.dones {
+		if min_done > px.dones[k] {
+			min_done = px.dones[k]
+		}
+	}
+	return min_done + 1
 }
 
 //
@@ -146,7 +377,16 @@ func (px *Paxos) Min() int {
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
 	// Your code here.
-	return false, nil
+	px.mu.Lock()
+	ins, ok := px.instances[seq]
+	px.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+
+	ins.MuLearner.Lock()
+	defer ins.MuLearner.Unlock()
+	return ins.Decided, ins.Value
 }
 
 //
@@ -172,6 +412,13 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.me = me
 
 	// Your initialization code here.
+	px.instances = make(map[int]*instance)
+	px.max_seq = -1
+	px.done = -1
+	px.dones = make(map[int]int)
+	for k := range px.peers {
+		px.dones[k] = -1
+	}
 
 	if rpcs != nil {
 		// caller will create socket &c
