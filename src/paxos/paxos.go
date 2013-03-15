@@ -41,7 +41,7 @@ type instance struct {
 	N_a        int         // highest accept seen
 	V_a        interface{} // highest accept seen
 
-	MuLearner sync.Mutex
+	MuLearner sync.RWMutex
 	Decided   bool
 	Value     interface{}
 }
@@ -172,11 +172,20 @@ func (px *Paxos) proposer(seq int) {
 		ok := call(px.peers[i], "Paxos.AcceptorPrepare", &preReq, &preRsp)
 		if ok {
 			connected++
+			if preRsp.Decided {
+				ins.MuLearner.Lock()
+				defer ins.MuLearner.Unlock()
+				ins.Decided = true
+				ins.Value = preRsp.V_a
+				return
+			}
 			if preRsp.OK {
 				counter++
 				if preRsp.N_a > max_n {
 					max_n = preRsp.N_a
-					v_ = preRsp.V_a
+					if preRsp.V_a != nil {
+						v_ = preRsp.V_a
+					}
 				}
 			}
 		}
@@ -233,6 +242,14 @@ func (px *Paxos) AcceptorPrepare(req *PrepareReq, rsp *PrepareRsp) error {
 
 	px.dones[req.Me] = req.Done
 	px.mu.Unlock()
+	ins.MuLearner.RLock()
+	if ins.Decided {
+		rsp.V_a = ins.Value
+		rsp.Decided = true
+		ins.MuLearner.RUnlock()
+		return nil
+	}
+	ins.MuLearner.RUnlock()
 
 	ins.MuAcceptor.Lock()
 	defer ins.MuAcceptor.Unlock()

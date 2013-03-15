@@ -8,9 +8,10 @@ type PrepareReq struct {
 }
 
 type PrepareRsp struct {
-	OK  bool
-	N_a int
-	V_a interface{}
+	OK      bool
+	N_a     int
+	V_a     interface{}
+	Decided bool
 }
 
 type AcceptReq struct {
